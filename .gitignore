@@ -1,0 +1,13 @@
+.env
+*.session
+*.session-journal
+login_code
+login_password
+.lock
+logs/
+.venv/
+__pycache__/
+bookings.db*
+config.env
+alarms/*
+!alarms/.gitkeep

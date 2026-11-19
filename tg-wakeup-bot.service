@@ -1,0 +1,20 @@
+[Unit]
+Description=Telegram wake-up call booking bot (py-tgcalls p2p)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/tg-wakeup-call
+ExecStart=/root/tg-wakeup-call/.venv/bin/python /root/tg-wakeup-call/bot.py run
+Restart=always
+RestartSec=10
+# 2 = 沒登入、3 = session 被 wakeup.py 占用：不要無限重啟
+RestartPreventExitStatus=2 3
+UMask=0077
+# log 已寫進 logs/bot.log，journal 只留錯誤輸出
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
