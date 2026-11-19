@@ -7,6 +7,82 @@
 - 登入帳號：一般 Telegram 使用者帳號（不是 Bot API；session：`wakeup.session`，權限 600）
 - 以 systemd 服務 `tg-wakeup-bot` 常駐，預設路徑 `/root/tg-wakeup-call`
 
+## 架設
+
+### 準備
+
+- **給 bot 用的 Telegram 帳號**：要是一般使用者帳號，BotFather 建的 bot 不能打私人電話。建議另外辦一個號碼，Telegram 不能打給自己，測試要用別的帳號接。
+- **API ID 與 API hash**：登入 https://my.telegram.org → API development tools 申請。
+- **Linux 主機**：glibc 的 x86_64 或 aarch64（ntgcalls 只有這兩種 wheel，不支援 Alpine）、Python ≥ 3.10、`ffmpeg`、systemd。
+
+### 1. 安裝
+
+```bash
+apt install -y git python3-venv ffmpeg   # Debian / Ubuntu
+git clone https://github.com/tw-yuan/tg-wakeup-call.git /root/tg-wakeup-call
+cd /root/tg-wakeup-call
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && chmod 600 .env   # 填 TG_API_ID、TG_API_HASH、TG_PHONE
+cp config.env.example config.env
+```
+
+裝在別的路徑的話，`tg-wakeup-bot.service` 的 `WorkingDirectory`、`ExecStart` 也要跟著改。
+
+### 2. 登入 bot 帳號
+
+```bash
+.venv/bin/python wakeup.py --login
+```
+
+送出驗證碼後會等 30 分鐘。另開一個終端機，把 Telegram 收到的驗證碼寫進 `login_code`；有兩步驟驗證的話，密碼再寫進 `login_password`。程式讀完會立刻刪掉：
+
+```bash
+cd /root/tg-wakeup-call
+echo 12345 > login_code
+read -rsp '2FA 密碼: ' p; printf '%s' "$p" > login_password; unset p
+```
+
+### 3. 填 config.env
+
+把 bot 帳號加進要開放的群組，管理者各自私訊 bot 帳號一次，再列出最近的對話找 id（群組是 `-100` 開頭；私訊對話的 id 就是對方的 user id）：
+
+```bash
+.venv/bin/python -c "
+from dotenv import dotenv_values
+from telethon.sync import TelegramClient
+env = dotenv_values('.env')
+with TelegramClient('wakeup', int(env['TG_API_ID']), env['TG_API_HASH']) as c:
+    for d in c.iter_dialogs(limit=30):
+        print(d.id, d.name)"
+```
+
+| 設定 | 說明 |
+|---|---|
+| `BOT_GROUP_IDS` | 開放的群組 id（逗號分隔），成員可以私訊預約 |
+| `BOT_ADMIN_IDS` | 管理者 user id（逗號分隔），可以叫任何人、在群組下指令 |
+| `SELF_TEST_USERNAME` | `wakeup.py --now` 測試時撥給誰（不能是 bot 帳號自己） |
+
+響鈴秒數、重撥間隔、預約上限等其他設定都有預設值，說明寫在 `config.env.example` 裡。
+
+### 4. 啟動服務
+
+```bash
+cp tg-wakeup-bot.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now tg-wakeup-bot
+tail -f logs/bot.log   # 出現「bot 已啟動，開始監聽群組、私訊與排程」就好了
+```
+
+### 5. 試打一通
+
+被叫的人要到 Telegram 的「設定 → 隱私與安全 → 通話」，把 bot 帳號加進「永遠允許」。然後：
+
+```bash
+.venv/bin/python bot.py add --target 你的username --at now --minutes 2
+```
+
+session 同時只能給一個程式用：服務在跑的時候，要用 `wakeup.py` 或上面列 id 的指令，先 `systemctl stop tg-wakeup-bot`，用完再 `start`。
+
 ## 檔案
 
 | 檔案 | 說明 |
@@ -17,7 +93,7 @@
 | `config.env` | 一般設定：開放群組、管理者、群組預約規則、鬧鈴、播放秒數（不 commit；範本見 `config.env.example`） |
 | `bookings.db` | 預約資料（SQLite） |
 | `alarm.mp3` | 鬧鈴（880/1320 Hz 嗶聲，10 秒，會循環播放） |
-| `tg-wakeup-bot.service` | systemd unit（已複製到 `/etc/systemd/system/`） |
+| `tg-wakeup-bot.service` | systemd unit（架設時複製到 `/etc/systemd/system/`） |
 | `logs/bot.log` | 服務 log：群組指令、預約、撥號、響鈴、接通、掛斷原因、錯誤，含台北時間戳 |
 
 ## 怎麼預約
@@ -82,28 +158,6 @@ tail -f /root/tg-wakeup-call/logs/bot.log
 ```
 
 服務重啟時：撥號到一半的預約會重新開始撥（在期限內）；從沒開始、又錯過 10 分鐘以上的會標成 `missed` 並在群組通知。
-
-## 安裝與首次登入
-
-需要 Python ≥ 3.10、`ffmpeg` 與 `ffprobe`（在 PATH 上）。ntgcalls 只有 glibc x86_64 / aarch64 的 wheel（不支援 Alpine）。
-
-```bash
-cd /root/tg-wakeup-call
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env && chmod 600 .env   # 填入 api_id / api_hash / 手機
-cp config.env.example config.env          # 填入群組、管理者
-systemctl stop tg-wakeup-bot              # session 同時只能給一個程式用
-.venv/bin/python wakeup.py --login
-```
-
-`--login` 送出驗證碼後會等 30 分鐘。把驗證碼寫進 `login_code`（有兩步驟驗證密碼時再寫進 `login_password`），程式讀完立即刪除：
-
-```bash
-echo 12345 > /root/tg-wakeup-call/login_code
-read -rsp '2FA 密碼: ' p; printf '%s' "$p" > /root/tg-wakeup-call/login_password; unset p
-```
-
-登入後 `systemctl start tg-wakeup-bot`。
 
 ## 隨機鬧鈴
 
